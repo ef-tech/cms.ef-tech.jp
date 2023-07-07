@@ -1,0 +1,84 @@
+name: 'Application CI'
+
+on:
+  push:
+    branches:
+      - main
+      - 'release/*'
+      - 'hotfix/*'
+      - develop
+      - 'feature/*'
+      - 'refactor/*'
+      - 'test/*'
+  pull_request:
+    types: [ opened, reopened, synchronize ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: eftech_cms_testing
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+
+      - name: Install dependencies ubuntu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Copy .env.ci to .env
+        run: cp .env.ci .env
+
+      - name: Cache dependencies laravel
+        id: composer-cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ github.workspace }}/vendor
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install Dependencies laravel
+        if: steps.composer-cache.outputs.cache-hit != 'true'
+        run: composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+
+      - name: Run PHP CS Fixer
+        run: vendor/bin/php-cs-fixer fix --dry-run --diff
+
+      - name: Run Larastan
+        run: vendor/bin/phpstan analyze
+
+      - name: Configure MySQL connection
+        run: |
+          echo "DB_HOST=127.0.0.1" >> $GITHUB_ENV
+          echo "DB_PORT=3306" >> $GITHUB_ENV
+          echo "DB_DATABASE=eftech_cms_testing" >> $GITHUB_ENV
+          echo "DB_USERNAME=root" >> $GITHUB_ENV
+          echo "DB_PASSWORD=password" >> $GITHUB_ENV
+
+      - name: Generate Laravel application key
+        run: php artisan key:generate
+
+      - name: Run Laravel migrations
+        run: php artisan migrate --force
+
+      - name: Run Laravel tests
+        run: vendor/bin/phpunit
